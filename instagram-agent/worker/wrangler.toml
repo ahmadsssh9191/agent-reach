@@ -1,0 +1,21 @@
+name = "hausofit-dm-agent"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# knowledge.md and the two HTML pages are bundled as plain text.
+[[rules]]
+type = "Text"
+globs = ["**/*.md", "**/*.html"]
+fallthrough = true
+
+[vars]
+# "1" = the bot replies. Anything else = silent. Change in the Cloudflare dashboard.
+BOT_ENABLED = "1"
+# Comma-separated Instagram IDs. If set, the bot answers only them (testing).
+ALLOWED_SENDER_IDS = ""
+CLAUDE_MODEL = "claude-opus-5-5"
+
+# Secrets (set with `npx wrangler secret put NAME`, never written here):
+#   ANTHROPIC_API_KEY, IG_ACCESS_TOKEN, IG_APP_SECRET, IG_VERIFY_TOKEN,
+#   IG_ACCOUNT_ID, HAUSOFIT_SHARED_SECRET

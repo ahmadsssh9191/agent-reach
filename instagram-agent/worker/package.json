@@ -1,0 +1,16 @@
+{
+  "name": "hausofit-dm-agent",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "try": "node try.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.160.1"
+  }
+}
