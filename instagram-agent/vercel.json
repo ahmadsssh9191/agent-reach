@@ -1,0 +1,6 @@
+{
+  "functions": {
+    "api/webhook.py": { "includeFiles": "{knowledge.md,hausofit/**}", "maxDuration": 60 },
+    "api/reply.py": { "includeFiles": "{knowledge.md,hausofit/**}", "maxDuration": 10 }
+  }
+}
