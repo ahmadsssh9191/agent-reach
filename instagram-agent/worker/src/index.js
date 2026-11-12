@@ -95,6 +95,9 @@ async function replyLater(env, id, text, name) {
   try {
     const sub = await mc.getSubscriber(env, id);
     if (mc.humanHandling(sub)) return console.log("manychat async: skip, human handling");
+    if ((sub.tags || []).some((t) => /^no ?bot$/i.test(String(t.name || "").trim()))) {
+      return console.log("manychat async: skip, contact tagged no bot");
+    }
     const history = mc.readHistory(sub);
     const profile = mc.readProfile(sub);
     let result;
@@ -155,6 +158,18 @@ async function manychat(request, env, ctx) {
   let text = String(payload.text || "").trim().slice(0, 2000);
   // An unfilled ManyChat variable (e.g. "{{last_input_text}}") means we got no real text.
   if (/^\{\{.*\}\}$/.test(text)) text = "";
+  // Conversation-starter buttons arrive as their label text.
+  const BUTTONS = [
+    [/مساعدة بالمقاس|עזרה במידה/, "زر: مساعدة بالمقاس"],
+    [/شو الجديد|מה חדש/, "زر: شو الجديد"],
+    [/التوصيل والدفع|משלוח ותשלום/, "زر: التوصيل والدفع"],
+    [/بدي أحكي مع حدا|לדבר עם נציגה/, "زر: بدي أحكي مع حدا"],
+  ];
+  if (text.includes("·")) {
+    const hit = BUTTONS.find(([re]) => re.test(text));
+    if (hit) text = hit[1];
+  }
+
   const subscriberId = String(payload.user_id || "").replace(/[^0-9]/g, "");
   console.log(`manychat: ${text.length} chars, subscriber ${subscriberId ? "yes" : "no"}`);
 

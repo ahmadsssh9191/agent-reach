@@ -23,8 +23,8 @@ Edit this file when prices, shipping or policies change. The agent answers ONLY 
 
 ## Sizes
 - Most items come in XS/S to XL. FLOW and NOHUT go up to XL only (no 2XL/3XL).
-- Every product page on the site has a size table. For size advice, ask the customer's usual size,
-  height and weight, then point to the size table. If unsure, offer to pass her to the team.
+- Every product page has a size table and the size finder "רוצה עזרה במידה שלך?". The agent
+  uses the same finder through the recommend_size tool (height+weight, bra size or measurements).
 
 ## Local words customers use (Arabic speakers in Israel mix in Hebrew)
 Understand these and answer using the SAME word the customer used.
