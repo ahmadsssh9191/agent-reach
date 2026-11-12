@@ -10,7 +10,7 @@ import DATA_DELETION from "../../data-deletion.html";
 import { answer, guessLanguage, handoff, isHandoffText, updateProfile } from "./agent.js";
 import { recentHistory, sendText, verifySignature } from "./instagram.js";
 import * as mc from "./manychat.js";
-import { flushQuiet, sendSummary, trackMessage } from "./summary.js";
+import { flushQuiet, sendSummary, sendWeeklyReport, trackMessage } from "./summary.js";
 
 const HUMAN_PAUSE_MS = 12 * 3600 * 1000; // bot stays quiet this long after a hand-off
 const seenMids = new Set(); // best effort: Meta sometimes sends the same message twice
@@ -91,6 +91,24 @@ async function webhookPost(request, env, ctx) {
   return new Response("ok");
 }
 
+// Downloads a photo she sent (max 5 MB) for Claude to look at.
+async function fetchMedia(url) {
+  try {
+    const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+    if (!res.ok) return null;
+    const type = (res.headers.get("content-type") || "").split(";")[0].trim();
+    if (!/^image\/(jpeg|png|gif|webp)$/.test(type)) return { kind: type.split("/")[0] || "other" };
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (buf.length > 5 * 1024 * 1024) return { kind: "too-big" };
+    let bin = "";
+    for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    return { kind: "image", mediaType: type, data: btoa(bin) };
+  } catch (e) {
+    console.log(`media fetch: ${e.message}`);
+    return null;
+  }
+}
+
 async function replyLater(env, id, text, name) {
   try {
     const sub = await mc.getSubscriber(env, id);
@@ -100,12 +118,28 @@ async function replyLater(env, id, text, name) {
     }
     const history = mc.readHistory(sub);
     const profile = mc.readProfile(sub);
+
+    // Instagram media arrive as a CDN link in the text (photo, voice, video).
+    let image = null;
+    const media = (text.match(/https:\/\/(?:lookaside\.fbsbx\.com|[a-z0-9.-]*(?:cdninstagram|fbcdn)\.(?:com|net))\/\S+/i) || [])[0];
+    if (media) {
+      const caption = text.replace(media, "").trim();
+      const m = await fetchMedia(media);
+      if (m?.kind === "image") {
+        image = m;
+        text = caption || "(she sent this photo without text)";
+      } else {
+        text = ""; // voice note, video or unreadable: goes to the team below
+      }
+    }
+    const lang0 = guessLanguage(text || history.filter((x) => x.who === "customer").map((x) => x.text).join(" ") || "ع");
+
     let result;
     if (!text) {
-      result = handoff("ar", "no text (photo, voice, sticker)");
+      result = handoff(lang0, "no text (voice, video or sticker)");
     } else {
       try {
-        result = await answer(env, text, history, name, { effort: env.CLAUDE_EFFORT_ASYNC || "medium", profile });
+        result = await answer(env, text, history, name, { effort: env.CLAUDE_EFFORT_ASYNC || "medium", profile, image });
       } catch (e) {
         console.log(`agent error: ${e.message}`);
         result = handoff(guessLanguage(text), "agent error");
@@ -113,7 +147,7 @@ async function replyLater(env, id, text, name) {
     }
     const track = (extra) =>
       trackMessage(env, id, {
-        text: text || "(photo / voice / sticker)",
+        text: (image ? "(photo) " : "") + (text || "(voice / video / sticker)"),
         name: name || sub.name,
         username: sub.ig_username,
         chatUrl: sub.live_chat_url,
@@ -133,7 +167,7 @@ async function replyLater(env, id, text, name) {
     }
     await track({ reply: result.reply, handoff: result.handoff, reason: result.reason });
     if (text) {
-      await mc.saveHistory(env, id, history, text, result.reply).catch((e) => console.log(`history save: ${e.message}`));
+      await mc.saveHistory(env, id, history, (image ? "(photo) " : "") + text, result.reply).catch((e) => console.log(`history save: ${e.message}`));
       await updateProfile(env, profile, name || sub.name, history, text, result.reply)
         .then((p) => p && mc.saveProfile(env, id, p))
         .catch((e) => console.log(`profile save: ${e.message}`));
@@ -173,6 +207,16 @@ async function manychat(request, env, ctx) {
   const subscriberId = String(payload.user_id || "").replace(/[^0-9]/g, "");
   console.log(`manychat: ${text.length} chars, subscriber ${subscriberId ? "yes" : "no"}`);
 
+  // Test the weekly report now (same secret).
+  if (payload.test_weekly === true) {
+    try {
+      await sendWeeklyReport(env);
+      return json({ ok: true });
+    } catch (e) {
+      return json({ ok: false, error: e.message }, 500);
+    }
+  }
+
   // Test email (same secret): sends a summary of a sample conversation.
   if (payload.test_email === true) {
     const conv = {
@@ -196,7 +240,12 @@ async function manychat(request, env, ctx) {
   // Test mode (same secret): full thinking, optional history, no time limit.
   if (payload.test === true) {
     const history = Array.isArray(payload.history) ? payload.history.slice(-10) : [];
-    const result = await answer(env, text, history, "", { effort: env.CLAUDE_EFFORT_ASYNC || "medium" });
+    const m = payload.image_url ? await fetchMedia(String(payload.image_url)) : null;
+    const image = m?.kind === "image" ? m : null;
+    const result = await answer(env, text || "(she sent this photo without text)", history, "", {
+      effort: env.CLAUDE_EFFORT_ASYNC || "medium",
+      image,
+    });
     return json(result);
   }
 
@@ -231,7 +280,12 @@ async function manychat(request, env, ctx) {
 
 export default {
   // Every 10 minutes: email summaries of conversations that went quiet.
+  // Sunday 06:00 UTC (08:00-09:00 Israel): weekly report email.
   async scheduled(event, env, ctx) {
+    if (event.cron === "0 6 * * SUN") {
+      ctx.waitUntil(sendWeeklyReport(env).catch((e) => console.log(`weekly report: ${e.message}`)));
+      return;
+    }
     ctx.waitUntil(flushQuiet(env));
   },
 

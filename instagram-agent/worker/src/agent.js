@@ -4,6 +4,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import KNOWLEDGE from "../../knowledge.md";
 import { buildCartLink, checkSizes, listProducts, recommendSize } from "./store.js";
+import { orderStatus } from "./orders.js";
 
 // Fixed hand-off lines. The webhook looks for these in the chat history to
 // know a human took over, so keep them exactly as they are.
@@ -141,6 +142,27 @@ Smart selling (like a good boutique seller, never pushy):
 - When she is ready, give the link and tell her she can pay by card, Apple
   Pay, Google Pay, Bit or cash on delivery.
 
+Photos she sends: when the message has a photo (a screenshot of a post or
+reel, a picture of an item), look at it carefully: item type (leggings,
+bra, set, shorts, jacket, socks...), colour, details (neckline, straps,
+cross back, wide leg, gathered back), and match it to the CATALOG using the
+names, colours and "about". If you are confident, say which item it is with
+its price, attach_photo for it and offer the link or sizes. If two items
+could match, attach_photo for the closest and ask "هاي القطعة اللي قصدك؟".
+If it is not something we sell, say so kindly and offer the closest item we
+have. If the photo has nothing to do with clothes or the shop, hand_off. Never
+describe or comment on her body in the photo.
+
+When something is not available: if the item, colour or size she wants is
+sold out (or the shop doesn't have it), never just say no. Check and offer
+up to 2 real alternatives that ARE in stock in her size, in this order:
+(1) the same item in another colour, (2) a similar item of the same type
+(e.g. another black bra, another high-waist legging), (3) the matching piece
+from another line in her colour. Say briefly why it's a good match (same
+fabric, similar cut, same colour), attach_photo for the best one, and ask
+which she prefers. If nothing fits, say so warmly and ask if she wants the
+team to let her know when it's back (hand_off).
+
 Order summary and ready cart: when she says she wants to order the items you
 talked about ("بدي كلشي"، "بدي اطلبهن"، "قديش المجموع"), or she picked several
 items:
@@ -232,10 +254,19 @@ team (hand_off) instead of guessing.
 
 Policies (shipping, payment, returns, sizes): only from STORE FACTS.
 
-Call hand_off when: order status/tracking/changes/refunds, complaints, she asks
-for a person, wholesale/collabs/influencers, a photo or voice message you cannot
-read, anything you cannot confirm, or you are not sure. After hand_off write
-nothing else.
+Her order ("وين طلبيتي؟", "وصلت؟", "מתי ההזמנה מגיעה?"): ask in one short line
+for the order number and the last 4 digits of the phone she ordered with (if
+she hasn't given them). Then call order_status. Tell her the status simply,
+when it was ordered, and if there is a tracking_link send it on its own line.
+Delivery is up to 5 business days; if it's late beyond that, apologise and
+hand_off. If order_status returns found:false, say kindly you couldn't find
+it with these details, ask her to check them once; if it fails again,
+hand_off. Never reveal details unless found:true.
+
+Call hand_off when: changes or cancellation of an order, refunds, returns to
+arrange, a damaged or wrong item, complaints, she asks for a person,
+wholesale/collabs/influencers, a voice message or video, anything you cannot
+confirm, or you are not sure. After hand_off write nothing else.
 
 Never promise what the catalog or facts do not say.
 
@@ -243,6 +274,21 @@ STORE FACTS:
 ${KNOWLEDGE}`;
 
 const TOOLS = [
+  {
+    name: "order_status",
+    description:
+      "Looks up HER order on the site: status, items, shipping, tracking link. Needs the order number AND the last 4 digits of the phone she ordered with. Returns found:false if they don't match.",
+    input_schema: {
+      type: "object",
+      properties: {
+        order_number: { type: "string" },
+        phone_last4: { type: "string" },
+      },
+      required: ["order_number", "phone_last4"],
+      additionalProperties: false,
+    },
+    strict: true,
+  },
   {
     name: "build_cart_link",
     description:
@@ -427,7 +473,13 @@ export async function answer(env, text, history = [], name = "", opts = {}) {
     "Your whole text output is sent to her as the DM, exactly as written. Write only that message, in her language, with no notes, translations, drafts, labels or explanations. Or call a tool.",
   );
 
-  const messages = [{ role: "user", content: lines.join("\n") }];
+  const userContent = opts.image
+    ? [
+        { type: "image", source: { type: "base64", media_type: opts.image.mediaType, data: opts.image.data } },
+        { type: "text", text: lines.join("\n") },
+      ]
+    : lines.join("\n");
+  const messages = [{ role: "user", content: userContent }];
   const images = [];
   let response;
   for (let step = 0; step < 7; step++) {
@@ -457,7 +509,9 @@ export async function answer(env, text, history = [], name = "", opts = {}) {
       return handoff(ho.input.language || lang, ho.input.reason);
     }
 
-    const work = uses.filter((b) => ["check_sizes", "attach_photo", "recommend_size", "build_cart_link"].includes(b.name));
+    const work = uses.filter((b) =>
+      ["check_sizes", "attach_photo", "recommend_size", "build_cart_link", "order_status"].includes(b.name),
+    );
     if (response.stop_reason !== "tool_use" || !work.length) break;
     messages.push({ role: "assistant", content: response.content });
     const results = await Promise.all(
@@ -468,6 +522,13 @@ export async function answer(env, text, history = [], name = "", opts = {}) {
             if (!p?.image) throw new Error("no photo for this product");
             if (images.length < 2 && !images.includes(p.image)) images.push(p.image);
             return { type: "tool_result", tool_use_id: b.id, content: "ok, the photo will be sent just before your message" };
+          }
+          if (b.name === "order_status") {
+            return {
+              type: "tool_result",
+              tool_use_id: b.id,
+              content: JSON.stringify(await orderStatus(env, b.input.order_number, b.input.phone_last4)),
+            };
           }
           if (b.name === "build_cart_link") {
             return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(await buildCartLink(b.input.items)) };

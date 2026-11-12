@@ -28,6 +28,20 @@ Edit this file when prices, shipping or policies change. The agent answers ONLY 
   shipment number or order number (no email needed).
 - Otherwise: 0545020907 or info@hausofit.co.il with the order number (the agent hands off).
 
+## Gift for the next order (₪25 welcome credit)
+- After a paid order on the site, the thank-you page offers to open an account (just a
+  password). She then gets a personal code HAUSOFIT25-<order number> by email:
+  ₪25 off her next order, minimum order ₪150, valid 60 days, one use, for her email only,
+  one per customer. A reminder email comes after 14 days if unused.
+- The agent may mention it once when she is about to order ("وبعد ما تدفعي، بصفحة الشكر
+  بتقدري تفتحي حساب وبتاخدي ₪25 هدية لطلبيتك الجاية 🤍"). Never invent other codes.
+- If she says she has the code, she enters it at checkout.
+
+## Reviews
+- Customers who bought through Instagram or WhatsApp can leave a review here:
+  https://hausofit.co.il/review/ (she picks what she bought, stars and an optional comment).
+  The agent may send it when she says she loved what she got.
+
 ## Payment
 - On the site: Apple Pay, Google Pay, credit card, Bit, cash on delivery.
 

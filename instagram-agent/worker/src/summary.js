@@ -37,6 +37,7 @@ export async function flushQuiet(env) {
     if (!conv || Date.now() - conv.last < QUIET_MS) continue;
     try {
       await sendSummary(env, conv, false);
+      await recordStats(env, conv).catch((e) => console.log(`stats ${k.name}: ${e.message}`));
       await env.CONVOS.delete(k.name);
     } catch (e) {
       console.log(`summary email ${k.name}: ${e.message}`);
@@ -63,6 +64,117 @@ async function summarise(env, conv) {
     .map((b) => b.text)
     .join("")
     .trim();
+}
+
+// ---- Weekly report ----------------------------------------------------------
+// After each finished conversation: a small record in KV (kept 21 days).
+
+async function recordStats(env, conv) {
+  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, timeout: 30_000, maxRetries: 1 });
+  const chat = conv.messages.map((m) => `${m.who === "customer" ? "Customer" : "Shop"}: ${m.text}`).join("\n");
+  const r = await client.messages.create({
+    model: env.CLAUDE_PROFILE_MODEL || "claude-haiku-5-5",
+    max_tokens: 1024,
+    output_config: { effort: "low" },
+    system:
+      "Read this Instagram DM chat between a customer and a women's activewear shop. Answer with JSON only, no other text: " +
+      '{"topics": [up to 3 short English labels from: price, size help, stock, shipping, returns, order status, payment, fabric/care, new items, complaint, other], ' +
+      '"items_asked": [short English item names she asked about, with colour], ' +
+      '"not_available": [items/colours/sizes she wanted that were sold out or not sold, e.g. "olive FLOW pants M"], ' +
+      '"outcome": one of "cart link sent", "product link sent", "handed to team", "just asked", "no reply needed"}',
+    messages: [{ role: "user", content: chat }],
+  });
+  const raw = r.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+  let stats = {};
+  try {
+    stats = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
+  } catch {
+    stats = {};
+  }
+  stats.cart = conv.messages.some((m) => /hof_cart=/.test(m.text || ""));
+  stats.handoff = Boolean(conv.handoff);
+  stats.at = conv.last || Date.now();
+  await env.CONVOS.put(`stat:${stats.at}:${conv.id}`, JSON.stringify(stats), { expirationTtl: 21 * 24 * 3600 });
+}
+
+async function agentOrders(env, sinceIso) {
+  if (!env.WC_KEY || !env.WC_SECRET) return null;
+  const out = [];
+  for (let page = 1; page <= 5; page++) {
+    const url =
+      `https://hausofit.co.il/wp-json/wc/v3/orders?after=${encodeURIComponent(sinceIso)}&per_page=100&page=${page}` +
+      `&consumer_key=${encodeURIComponent(env.WC_KEY)}&consumer_secret=${encodeURIComponent(env.WC_SECRET)}`;
+    const res = await fetch(url, { headers: { "User-Agent": "HausofitDMAgent/1.0" } });
+    if (!res.ok) throw new Error(`woocommerce ${res.status}`);
+    const batch = await res.json();
+    for (const o of batch) {
+      const src = (o.meta_data || []).find((m) => m.key === "_hof_order_source")?.value;
+      if (src === "instagram_dm_agent") out.push({ number: o.number, status: o.status, total: Number(o.total) });
+    }
+    if (batch.length < 100) break;
+  }
+  return out;
+}
+
+export async function sendWeeklyReport(env) {
+  if (!env.CONVOS || !env.RESEND_API_KEY || !env.SUMMARY_EMAIL_TO) return;
+  const since = Date.now() - 7 * 24 * 3600 * 1000;
+  const list = await env.CONVOS.list({ prefix: "stat:" });
+  const stats = [];
+  for (const k of list.keys) {
+    const at = Number(k.name.split(":")[1]);
+    if (at >= since) stats.push(await env.CONVOS.get(k.name, "json"));
+  }
+  const count = (arr) => {
+    const m = {};
+    for (const x of arr) m[x] = (m[x] || 0) + 1;
+    return Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  };
+  const data = {
+    conversations: stats.length,
+    cart_links_sent: stats.filter((s) => s?.cart).length,
+    handed_to_team: stats.filter((s) => s?.handoff).length,
+    top_topics: count(stats.flatMap((s) => s?.topics || [])),
+    top_items_asked: count(stats.flatMap((s) => s?.items_asked || [])),
+    wanted_but_not_available: count(stats.flatMap((s) => s?.not_available || [])),
+    outcomes: count(stats.map((s) => s?.outcome).filter(Boolean)),
+  };
+  let orders = null;
+  try {
+    orders = await agentOrders(env, new Date(since).toISOString().slice(0, 19));
+  } catch (e) {
+    console.log(`weekly orders: ${e.message}`);
+  }
+  if (orders) {
+    data.orders_from_agent = orders.length;
+    data.revenue_from_agent_ils = orders.filter((o) => !["cancelled", "failed", "refunded"].includes(o.status)).reduce((a, o) => a + o.total, 0);
+  }
+
+  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, timeout: 60_000, maxRetries: 1 });
+  const r = await client.messages.create({
+    model: env.CLAUDE_PROFILE_MODEL || "claude-haiku-5-5",
+    max_tokens: 2048,
+    output_config: { effort: "low" },
+    system:
+      "اكتب لصاحب محل ملابس رياضية نسائية تقرير أسبوعي قصير بالعربي المحكي عن رسائل الانستغرام اللي رد عليها الايجينت. " +
+      "استعمل الأرقام بس من البيانات. أقسام قصيرة: الأرقام الأساسية، شو سألوا أكتر، أكتر قطع انسألوا عنها، " +
+      "شو طلبوا وما كان موجود (وهاد مهم لقرار شو ينزّل من المصنع)، ونصيحة وحدة أو تنتين عملية. " +
+      "إذا ما في طلبيات من الايجينت أو ما في بيانات طلبيات، احكي هيك بوضوح. بدون مبالغة. نص عادي، كل سطر فكرة.",
+    messages: [{ role: "user", content: JSON.stringify(data) }],
+  });
+  const text = r.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+  const html = `<div dir="rtl" style="font-family:Arial,sans-serif;font-size:15px;line-height:1.7;max-width:640px">${esc(text).replace(/\n/g, "<br>")}</div>`;
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      from: env.SUMMARY_EMAIL_FROM || "Hausofit DM agent <onboarding@resend.dev>",
+      to: [env.SUMMARY_EMAIL_TO],
+      subject: `📊 تقرير الانستغرام الأسبوعي: ${data.conversations} محادثة`,
+      html,
+    }),
+  });
+  if (!res.ok) throw new Error(`resend ${res.status}: ${(await res.text()).slice(0, 200)}`);
 }
 
 const esc = (s) => String(s || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
