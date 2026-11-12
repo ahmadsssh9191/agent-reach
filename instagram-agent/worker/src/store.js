@@ -31,14 +31,14 @@ async function getAll(query) {
 export async function listProducts() {
   if (cache.items.length && Date.now() - cache.at < CACHE_MS) return cache.items;
   const [products, variations] = await Promise.all([
-    getAll("_fields=id,name,type,prices,is_in_stock,attributes,images"),
-    getAll("type=variation&_fields=parent,variation,is_in_stock,low_stock_remaining"),
+    getAll("_fields=id,name,type,prices,is_in_stock,attributes,images,description"),
+    getAll("type=variation&_fields=id,parent,variation,is_in_stock,low_stock_remaining"),
   ]);
   const stockByParent = {};
   for (const v of variations) {
     const left = v.low_stock_remaining;
     const status = !v.is_in_stock ? "sold out" : left != null && left <= 2 ? "1-2 left" : "in stock";
-    (stockByParent[v.parent] ||= []).push(`${v.variation}: ${status}`);
+    (stockByParent[v.parent] ||= []).push(`${v.variation} [variation_id ${v.id}]: ${status}`);
   }
   const items = [];
   {
@@ -53,6 +53,21 @@ export async function listProducts() {
         in_stock: Boolean(p.is_in_stock),
         link: `${SITE}/?p=${p.id}`,
       };
+      // Fabric/care block (div.hof-specs) and a short "about" from the description.
+      const desc = p.description || "";
+      const specStart = desc.indexOf('class="hof-specs"');
+      if (specStart >= 0) {
+        const block = desc.slice(specStart, desc.indexOf("</div>", specStart));
+        const specs = {};
+        for (const m of block.matchAll(/<strong>([^<:]+):?<\/strong>\s*([^<]+)/g)) specs[m[1].trim()] = m[2].trim();
+        if (Object.keys(specs).length) item.specs = specs;
+      }
+      const about = (specStart >= 0 ? desc.slice(0, desc.lastIndexOf("<div", specStart)) : desc)
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;|&#8211;|&#8217;|&quot;/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (about) item.about = about.slice(0, 220);
       // Main photo (not shown to the model; used by attach_photo).
       Object.defineProperty(item, "image", { value: p.images?.[0]?.src || null, enumerable: false });
       if (stockByParent[p.id]) {
@@ -214,6 +229,47 @@ export async function recommendSize(productId, input) {
   if (approximate) notes.push("her height/weight are outside the reference ranges: this is only an estimate");
   notes.push("for a more exact result she can send body measurements (chest, or waist and hips)");
   return { method: "height and weight ranges", sizes: [{ part: "main", size }], notes };
+}
+
+// Ready-cart link (site snippet #83): ?hof_cart=ID:SIZE:QTY,...
+// Size-plugin products take one size per size group, joined with "/" in the
+// order the groups appear on the product page; variations go by variation_id.
+export async function buildCartLink(items) {
+  const parts = [];
+  const problems = [];
+  for (const it of (items || []).slice(0, 10)) {
+    const qty = Math.min(10, Math.max(1, Number(it.qty) || 1));
+    if (it.variation_id) {
+      parts.push(`${Number(it.variation_id)}::${qty}`);
+      continue;
+    }
+    const id = Number(it.product_id);
+    if (!id) {
+      problems.push("item without product_id or variation_id");
+      continue;
+    }
+    const info = await checkSizes(id);
+    const groups = typeof info.sizes === "object" ? Object.keys(info.sizes) : [];
+    if (!groups.length) {
+      parts.push(`${id}::${qty}`);
+      continue;
+    }
+    const given = it.sizes || {};
+    const chosen = [];
+    for (const g of groups) {
+      const s = given[g] ?? (groups.length === 1 ? Object.values(given)[0] : undefined);
+      if (!s) {
+        problems.push(`product ${id}: missing size for "${g}" (groups in order: ${groups.join(" / ")})`);
+        break;
+      }
+      if (info.sizes[g][s] === undefined) problems.push(`product ${id}: size ${s} does not exist for "${g}"`);
+      else if (info.sizes[g][s] === "sold out") problems.push(`product ${id}: size ${s} for "${g}" is sold out`);
+      chosen.push(s);
+    }
+    if (chosen.length === groups.length) parts.push(`${id}:${chosen.join("/")}:${qty}`);
+  }
+  if (problems.length) return { ok: false, problems };
+  return { ok: true, link: `${SITE}/?hof_cart=${parts.join(",")}` };
 }
 
 // Stock per size for products that keep sizes in the shop's size plugin.

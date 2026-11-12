@@ -3,7 +3,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import KNOWLEDGE from "../../knowledge.md";
-import { checkSizes, listProducts, recommendSize } from "./store.js";
+import { buildCartLink, checkSizes, listProducts, recommendSize } from "./store.js";
 
 // Fixed hand-off lines. The webhook looks for these in the chat history to
 // know a human took over, so keep them exactly as they are.
@@ -141,6 +141,27 @@ Smart selling (like a good boutique seller, never pushy):
 - When she is ready, give the link and tell her she can pay by card, Apple
   Pay, Google Pay, Bit or cash on delivery.
 
+Order summary and ready cart: when she says she wants to order the items you
+talked about ("بدي كلشي"، "بدي اطلبهن"، "قديش المجموع"), or she picked several
+items:
+1. Make sure every item has a size (and colour where needed). If one is
+   missing, ask only for that. Check stock for each chosen size.
+2. Send a clear summary: one line per item (name in her language, colour,
+   size, price), then the items total. Shipping: free from 350 ILS (not for
+   Eilat and the Dead Sea); under 350 it is 50 north/center, 55 south, 100
+   Eilat and the Dead Sea (ask her area only if it changes the total). If
+   one more piece would reach free shipping, say it once. Then ask in one
+   line: "بدك تزيدي إشي، تشيلي إشي، ولا نثبّت؟" (Hebrew: "רוצה להוסיף, להוריד
+   או שנאשר?").
+   The summary may use one line per item; keep it short and tidy.
+3. When she confirms, call build_cart_link with exactly those items. Send:
+   one warm line + the link alone on its own line + one line: she opens it,
+   the cart is ready with her sizes, she fills in her details and pays (card,
+   Apple Pay, Google Pay, Bit or cash on delivery). Mention that the final
+   price is the one shown on the checkout page.
+4. If build_cart_link reports a problem (missing or sold-out size), tell her
+   simply and offer the closest alternative. Never build a link yourself.
+
 Product photo: when you are sure which exact item she means (she picked it,
 asked for its link, or there is only one match), call attach_photo for it so
 she sees the item; then write your message with its link. Never attach a
@@ -201,6 +222,14 @@ Good replies (copy the tone and layout, not the facts):
 "היי 🤍 המשלוח 50 ש״ח ובהזמנה מעל 350 ש״ח הוא בחינם
 מגיע עד 5 ימי עסקים"
 
+Product details: each CATALOG item may have "specs" (Hebrew labels: הרכב בד =
+fabric composition, תחושה = feel, שקיפות = opacity/squat proof, גזרה = fit vs.
+size, מתאים ל = good for, הוראות כביסה = care) and "about" (the product page
+text). Use them for questions like "بشف؟", "شو القماش؟", "كيف بغسله؟", "بنفع
+للبيلاتس؟", "شو الفرق بين MIVNI و FORMA؟". Translate them naturally into her
+language. If the detail she asks about is missing, say you'll check with the
+team (hand_off) instead of guessing.
+
 Policies (shipping, payment, returns, sizes): only from STORE FACTS.
 
 Call hand_off when: order status/tracking/changes/refunds, complaints, she asks
@@ -214,6 +243,29 @@ STORE FACTS:
 ${KNOWLEDGE}`;
 
 const TOOLS = [
+  {
+    name: "build_cart_link",
+    description:
+      "Builds ONE link that fills the site cart with all the items she confirmed (with sizes) and opens checkout. For products with colour/size variations (sizes_colours has variation_id) pass variation_id. For size-plugin products (size_stock: call check_sizes) pass product_id and sizes as {group title from check_sizes: size}, one entry per size group (sets have 2+ groups). Returns problems if a size is missing or sold out.",
+    input_schema: {
+      type: "object",
+      properties: {
+        items: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              product_id: { type: "integer" },
+              variation_id: { type: "integer" },
+              sizes: { type: "object", additionalProperties: { type: "string" } },
+              qty: { type: "integer" },
+            },
+          },
+        },
+      },
+      required: ["items"],
+    },
+  },
   {
     name: "recommend_size",
     description:
@@ -378,7 +430,7 @@ export async function answer(env, text, history = [], name = "", opts = {}) {
   const messages = [{ role: "user", content: lines.join("\n") }];
   const images = [];
   let response;
-  for (let step = 0; step < 4; step++) {
+  for (let step = 0; step < 7; step++) {
     response = await client.beta.messages.create({
       model: env.CLAUDE_MODEL || "claude-opus-5-5",
       max_tokens: 4096,
@@ -405,7 +457,7 @@ export async function answer(env, text, history = [], name = "", opts = {}) {
       return handoff(ho.input.language || lang, ho.input.reason);
     }
 
-    const work = uses.filter((b) => ["check_sizes", "attach_photo", "recommend_size"].includes(b.name));
+    const work = uses.filter((b) => ["check_sizes", "attach_photo", "recommend_size", "build_cart_link"].includes(b.name));
     if (response.stop_reason !== "tool_use" || !work.length) break;
     messages.push({ role: "assistant", content: response.content });
     const results = await Promise.all(
@@ -416,6 +468,9 @@ export async function answer(env, text, history = [], name = "", opts = {}) {
             if (!p?.image) throw new Error("no photo for this product");
             if (images.length < 2 && !images.includes(p.image)) images.push(p.image);
             return { type: "tool_result", tool_use_id: b.id, content: "ok, the photo will be sent just before your message" };
+          }
+          if (b.name === "build_cart_link") {
+            return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(await buildCartLink(b.input.items)) };
           }
           if (b.name === "recommend_size") {
             return { type: "tool_result", tool_use_id: b.id, content: JSON.stringify(await recommendSize(b.input.product_id, b.input)) };
@@ -429,12 +484,37 @@ export async function answer(env, text, history = [], name = "", opts = {}) {
     messages.push({ role: "user", content: results });
   }
 
-  let out = response.content
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("")
-    .trim();
+  const textOf = (r) =>
+    r.content
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
+      .join("")
+      .trim();
+  let out = textOf(response);
   if (lang !== "en") out = dropEnglishLines(out);
+  if (!out) {
+    // The model finished (or ran out of steps) without writing the DM: ask once more, no tools.
+    if (response.content.length) messages.push({ role: "assistant", content: response.content });
+    if (messages[messages.length - 1].role === "assistant") {
+      messages.push({ role: "user", content: "Now write the DM to her, using what you found. Text only." });
+    }
+    const retry = await client.beta.messages.create({
+      model: env.CLAUDE_MODEL || "claude-opus-5-5",
+      max_tokens: 4096,
+      output_config: { effort: "low" },
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      system: [
+        { type: "text", text: RULES, cache_control: { type: "ephemeral" } },
+        { type: "text", text: `CATALOG:\n${JSON.stringify(catalog)}`, cache_control: { type: "ephemeral" } },
+      ],
+      tools: TOOLS,
+      tool_choice: { type: "none" },
+      messages,
+    });
+    out = textOf(retry);
+    if (lang !== "en") out = dropEnglishLines(out);
+  }
   if (!out) return handoff(lang, "empty reply");
   // Safety net: an Arabic/Hebrew customer must not get English notes or drafts.
   if (lang !== "en" && /\b(draft|reply|translation|customer|note)\b/i.test(out)) {

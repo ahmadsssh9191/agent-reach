@@ -6,9 +6,13 @@ const url = process.argv[2] || "https://hausofit-dm-agent.hausofit-dm-agent.work
 const key = process.env.HAUSOFIT_SHARED_SECRET;
 
 const CHATS = [
-  ["بدي التوب الاسود MIVNI بس مش عارفة شو مقاسي", "ما عندي غير طول ووزن، 163 و 60"],
-  ["بدي طقم FLOW الاسود", "شو مقاسي؟ صدري 88 خصري 72 وأردافي 100"],
-  ["مقاسي بالستيان 75B، شو بيلبقلي بتوب MIVNI الاسود؟"],
+  [
+    "بدي توب MIVNI الاسود مقاس M",
+    "وبدي كمان التايتس الاسود MIVNI مقاس M",
+    "تمام بدي كلشي، قديش المجموع؟",
+    "منثبت",
+  ],
+  ["بدي طقم FLOW البني، البنطلون L والطوب S، وزوج كلسات سود", "ثبتي"],
 ];
 
 for (const chat of CHATS) {
