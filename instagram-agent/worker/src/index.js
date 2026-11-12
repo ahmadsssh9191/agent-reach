@@ -7,8 +7,10 @@
 
 import PRIVACY from "../../privacy.html";
 import DATA_DELETION from "../../data-deletion.html";
-import { answer, guessLanguage, handoff, isHandoffText } from "./agent.js";
+import { answer, guessLanguage, handoff, isHandoffText, updateProfile } from "./agent.js";
 import { recentHistory, sendText, verifySignature } from "./instagram.js";
+import * as mc from "./manychat.js";
+import { flushQuiet, sendSummary, trackMessage } from "./summary.js";
 
 const HUMAN_PAUSE_MS = 12 * 3600 * 1000; // bot stays quiet this long after a hand-off
 const seenMids = new Set(); // best effort: Meta sometimes sends the same message twice
@@ -57,6 +59,7 @@ export async function handleEvent(env, event) {
       result = handoff(guessLanguage(text), "agent error");
     }
   }
+  if (result.silent) return `silent (${result.reason || ""})`;
   await sendText(env, sender, result.reply);
   return `sent (handoff=${result.handoff} ${result.reason || ""})`;
 }
@@ -88,7 +91,58 @@ async function webhookPost(request, env, ctx) {
   return new Response("ok");
 }
 
-async function manychat(request, env) {
+async function replyLater(env, id, text, name) {
+  try {
+    const sub = await mc.getSubscriber(env, id);
+    if (mc.humanHandling(sub)) return console.log("manychat async: skip, human handling");
+    const history = mc.readHistory(sub);
+    const profile = mc.readProfile(sub);
+    let result;
+    if (!text) {
+      result = handoff("ar", "no text (photo, voice, sticker)");
+    } else {
+      try {
+        result = await answer(env, text, history, name, { effort: env.CLAUDE_EFFORT_ASYNC || "medium", profile });
+      } catch (e) {
+        console.log(`agent error: ${e.message}`);
+        result = handoff(guessLanguage(text), "agent error");
+      }
+    }
+    const track = (extra) =>
+      trackMessage(env, id, {
+        text: text || "(photo / voice / sticker)",
+        name: name || sub.name,
+        username: sub.ig_username,
+        chatUrl: sub.live_chat_url,
+        ...extra,
+      }).catch((e) => console.log(`track: ${e.message}`));
+    if (result.silent) {
+      await track({ silent: true });
+      return console.log(`manychat async: silent (${result.reason})`);
+    }
+    try {
+      await mc.sendText(env, id, result.reply, result.images || []);
+    } catch (e) {
+      // A photo Instagram refuses should not block the text.
+      if (!result.images?.length) throw e;
+      console.log(`send with photo failed, retrying text only: ${e.message}`);
+      await mc.sendText(env, id, result.reply);
+    }
+    await track({ reply: result.reply, handoff: result.handoff, reason: result.reason });
+    if (text) {
+      await mc.saveHistory(env, id, history, text, result.reply).catch((e) => console.log(`history save: ${e.message}`));
+      await updateProfile(env, profile, name || sub.name, history, text, result.reply)
+        .then((p) => p && mc.saveProfile(env, id, p))
+        .catch((e) => console.log(`profile save: ${e.message}`));
+    }
+    if (result.handoff) await mc.markHandoff(env, id, HUMAN_PAUSE_MS / 3600000);
+    console.log(`manychat async: sent (handoff=${result.handoff} ${result.reason || ""})`);
+  } catch (e) {
+    console.log(`manychat async error: ${e.message}`);
+  }
+}
+
+async function manychat(request, env, ctx) {
   if (!env.HAUSOFIT_SHARED_SECRET || request.headers.get("X-Hausofit-Key") !== env.HAUSOFIT_SHARED_SECRET) {
     return json({ error: "unauthorized" }, 401);
   }
@@ -98,7 +152,46 @@ async function manychat(request, env) {
   } catch {
     return json({ error: "bad json" }, 400);
   }
-  const text = String(payload.text || "").trim().slice(0, 2000);
+  let text = String(payload.text || "").trim().slice(0, 2000);
+  // An unfilled ManyChat variable (e.g. "{{last_input_text}}") means we got no real text.
+  if (/^\{\{.*\}\}$/.test(text)) text = "";
+  const subscriberId = String(payload.user_id || "").replace(/[^0-9]/g, "");
+  console.log(`manychat: ${text.length} chars, subscriber ${subscriberId ? "yes" : "no"}`);
+
+  // Test email (same secret): sends a summary of a sample conversation.
+  if (payload.test_email === true) {
+    const conv = {
+      name: "مايا (تجربة)",
+      chatUrl: "https://app.manychat.com/",
+      messages: [
+        { who: "customer", text: "قديش التايتس الزهري؟" },
+        { who: "shop", text: "أهلاً فيكي 🤍 التايتس الزهري بـ149 شيكل، متوفر من XS لـL. أي مقاس بتلبسي عادة؟" },
+        { who: "customer", text: "M، ابعتيلي رابط" },
+        { who: "shop", text: "أكيد 🤍 https://hausofit.co.il/?p=6292" },
+      ],
+    };
+    try {
+      await sendSummary(env, conv, false);
+      return json({ ok: true });
+    } catch (e) {
+      return json({ ok: false, error: e.message }, 500);
+    }
+  }
+
+  // Test mode (same secret): full thinking, optional history, no time limit.
+  if (payload.test === true) {
+    const history = Array.isArray(payload.history) ? payload.history.slice(-10) : [];
+    const result = await answer(env, text, history, "", { effort: env.CLAUDE_EFFORT_ASYNC || "medium" });
+    return json(result);
+  }
+
+  // Async path: answer ManyChat at once, think as long as needed, then send the
+  // reply ourselves through the ManyChat API. No 10-second limit, real silence.
+  if (subscriberId && env.MANYCHAT_API_KEY) {
+    ctx.waitUntil(replyLater(env, subscriberId, text, String(payload.name || "").slice(0, 60)));
+    return json({ reply: "", handoff: false, async: true });
+  }
+
   if (!text) return json(handoff("ar", "no text"));
   const lang = guessLanguage(text);
   // ManyChat waits at most 10 seconds.
@@ -107,10 +200,26 @@ async function manychat(request, env) {
     console.log(`agent error: ${e.message}`);
     return handoff(lang, "agent error");
   });
-  return json(await Promise.race([work, timeout]));
+  const result = await Promise.race([work, timeout]);
+  // Until the ManyChat flow skips empty replies, never return an empty one there:
+  // an empty field could make ManyChat resend the previous reply.
+  if (result.silent && env.MANYCHAT_ALLOW_SILENT !== "1") {
+    const steer = {
+      ar: "أهلاً فيكي 🤍 أنا هون لأساعدك بكل إشي بخص قطعنا وطلبيتك، شو بتدوري عليه؟",
+      he: "היי 🤍 אני כאן לעזור בכל מה שקשור לפריטים ולהזמנה שלך, מה את מחפשת?",
+      en: "Hi 🤍 I'm here to help with anything about our pieces and your order, what are you looking for?",
+    };
+    return json({ reply: steer[lang] || steer.ar, handoff: false, reason: `steer: ${result.reason || ""}` });
+  }
+  return json(result);
 }
 
 export default {
+  // Every 10 minutes: email summaries of conversations that went quiet.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(flushQuiet(env));
+  },
+
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -123,7 +232,7 @@ export default {
       return ok ? new Response(url.searchParams.get("hub.challenge") || "") : new Response("forbidden", { status: 403 });
     }
     if (path === "/webhook" && request.method === "POST") return webhookPost(request, env, ctx);
-    if (path === "/reply" && request.method === "POST") return manychat(request, env);
+    if (path === "/reply" && request.method === "POST") return manychat(request, env, ctx);
     if (path === "/privacy.html") return html(PRIVACY);
     if (path === "/data-deletion.html") return html(DATA_DELETION);
     if (path === "/") return json({ ok: true });

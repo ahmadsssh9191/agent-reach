@@ -15,7 +15,20 @@ BOT_ENABLED = "1"
 # Comma-separated Instagram IDs. If set, the bot answers only them (testing).
 ALLOWED_SENDER_IDS = ""
 CLAUDE_MODEL = "claude-opus-5-5"
+# "low" keeps replies under ManyChat's 10s limit; "medium" thinks more but can take 8-10s.
+CLAUDE_EFFORT = "low"
 
 # Secrets (set with `npx wrangler secret put NAME`, never written here):
 #   ANTHROPIC_API_KEY, IG_ACCESS_TOKEN, IG_APP_SECRET, IG_VERIFY_TOKEN,
 #   IG_ACCOUNT_ID, HAUSOFIT_SHARED_SECRET
+# Thinking level when replying through the ManyChat API (no 10s limit).
+CLAUDE_EFFORT_ASYNC = "medium"
+
+# Open conversations waiting for a summary email.
+[[kv_namespaces]]
+binding = "CONVOS"
+id = "4004ad336789452bb16e03325fb61ae1"
+
+# Every 10 minutes: email summaries of conversations that went quiet for 30 min.
+[triggers]
+crons = ["*/10 * * * *"]

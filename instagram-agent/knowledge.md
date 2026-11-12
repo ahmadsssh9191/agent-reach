@@ -26,6 +26,29 @@ Edit this file when prices, shipping or policies change. The agent answers ONLY 
 - Every product page on the site has a size table. For size advice, ask the customer's usual size,
   height and weight, then point to the size table. If unsure, offer to pass her to the team.
 
+## Local words customers use (Arabic speakers in Israel mix in Hebrew)
+Understand these and answer using the SAME word the customer used.
+- تايتس / تايت / טייץ = leggings
+- طايتس قصير / شورتس / شورت = shorts or bike shorts
+- طوب / توب / טופ = sports bra (the bra/bra top of our sets). NOT a shirt, NOT a jacket.
+  If she says توب/طوب, answer about our sports bras only.
+- حزيه / حازيه / ستيان / صدرية / חזייה = bra, sports bra
+- سيت / سط / طقم / סט = set
+- ميداه / ميدا / מידה = size
+- مشلوح / משלוח = shipping, delivery
+- هزمناه / هزمنا / הזמנה = order
+- هنحا / هناحا / הנחה = discount
+- مڤتساع / مبتساع / מבצע = sale, special offer
+- كود / קוד = discount code
+- بيت / ביט = Bit payment app
+- كرتيس / كرطيس اشراي / כרטיס אשראי = credit card
+- تشلوم / תשלום = payment
+- هحزراه / החזרה = return; هحلفاه / החלפה = exchange
+- أتار / אתר = the website
+- مليه / ملاي / מלאי = stock
+- جاكيط / جاكيت / ז'קט = jacket
+- چاتكس / חצאית = skirt
+
 ## Things the agent does NOT know (pass to a human)
 - Exact stock of a specific size/colour.
 - Order status, tracking, changes to an existing order, refunds.
