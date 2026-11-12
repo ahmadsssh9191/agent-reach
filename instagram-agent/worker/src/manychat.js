@@ -78,7 +78,7 @@ export function humanHandling(sub) {
   return until > Date.now() / 1000;
 }
 
-export async function sendText(env, id, text, images = []) {
+export async function sendText(env, id, text, images = [], channel = "instagram") {
   const lines = text.split("\n");
   // Instagram allows about 1000 characters per message; split long replies by lines.
   const messages = images.map((url) => ({ type: "image", url }));
@@ -93,7 +93,7 @@ export async function sendText(env, id, text, images = []) {
   if (current) messages.push({ type: "text", text: current });
   await call(env, "POST", "/fb/sending/sendContent", {
     subscriber_id: id,
-    data: { version: "v2", content: { type: "instagram", messages } },
+    data: { version: "v2", content: { type: channel === "whatsapp" ? "whatsapp" : "instagram", messages } },
   });
 }
 

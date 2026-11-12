@@ -23,6 +23,10 @@ CLAUDE_EFFORT = "low"
 #   IG_ACCOUNT_ID, HAUSOFIT_SHARED_SECRET
 # Thinking level when replying through the ManyChat API (no 10s limit).
 CLAUDE_EFFORT_ASYNC = "medium"
+# WhatsApp: "test" = reply only to WA_TEST_PHONES; "all" = every customer.
+WA_MODE = "test"
+# Empty = no WhatsApp replies at all (owner answers WhatsApp by hand for now).
+WA_TEST_PHONES = ""
 
 # Open conversations waiting for a summary email.
 [[kv_namespaces]]

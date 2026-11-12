@@ -109,9 +109,25 @@ async function fetchMedia(url) {
   }
 }
 
-async function replyLater(env, id, text, name) {
+async function replyLater(env, id, text, name, channel = "") {
   try {
     const sub = await mc.getSubscriber(env, id);
+    // One ManyChat automation serves both channels: tell them apart from the contact.
+    if (!channel) {
+      const waOnly = sub.whatsapp_phone && !sub.ig_id;
+      const igTime = Date.parse(sub.ig_last_interaction || "") || 0;
+      const otherTime = Date.parse(sub.last_interaction || "") || 0;
+      channel = waOnly || (sub.whatsapp_phone && otherTime > igTime) ? "whatsapp" : "instagram";
+    }
+    // WhatsApp safety switch: WA_MODE "all" = everyone; otherwise only WA_TEST_PHONES.
+    if (channel === "whatsapp" && env.WA_MODE !== "all") {
+      const phone = String(sub.whatsapp_phone || "").replace(/\D/g, "").slice(-9);
+      const allowed = String(env.WA_TEST_PHONES || "")
+        .split(",")
+        .map((p) => p.replace(/\D/g, "").slice(-9))
+        .filter(Boolean);
+      if (!phone || !allowed.includes(phone)) return console.log("manychat async: skip, WhatsApp test mode");
+    }
     if (mc.humanHandling(sub)) return console.log("manychat async: skip, human handling");
     if ((sub.tags || []).some((t) => /^no ?bot$/i.test(String(t.name || "").trim()))) {
       return console.log("manychat async: skip, contact tagged no bot");
@@ -139,7 +155,7 @@ async function replyLater(env, id, text, name) {
       result = handoff(lang0, "no text (voice, video or sticker)");
     } else {
       try {
-        result = await answer(env, text, history, name, { effort: env.CLAUDE_EFFORT_ASYNC || "medium", profile, image });
+        result = await answer(env, text, history, name, { effort: env.CLAUDE_EFFORT_ASYNC || "medium", profile, image, channel });
       } catch (e) {
         console.log(`agent error: ${e.message}`);
         result = handoff(guessLanguage(text), "agent error");
@@ -158,13 +174,19 @@ async function replyLater(env, id, text, name) {
       return console.log(`manychat async: silent (${result.reason})`);
     }
     try {
-      await mc.sendText(env, id, result.reply, result.images || []);
+      await mc.sendText(env, id, result.reply, result.images || [], channel);
     } catch (e) {
-      // A photo Instagram refuses should not block the text.
-      if (!result.images?.length) throw e;
-      console.log(`send with photo failed, retrying text only: ${e.message}`);
-      await mc.sendText(env, id, result.reply);
+      console.log(`send on ${channel} failed: ${e.message}`);
+      try {
+        // A photo the channel refuses should not block the text.
+        await mc.sendText(env, id, result.reply, [], channel);
+      } catch {
+        // Wrong channel guess: try the other one.
+        channel = channel === "whatsapp" ? "instagram" : "whatsapp";
+        await mc.sendText(env, id, result.reply, [], channel);
+      }
     }
+    console.log(`manychat async: channel ${channel}`);
     await track({ reply: result.reply, handoff: result.handoff, reason: result.reason });
     if (text) {
       await mc.saveHistory(env, id, history, (image ? "(photo) " : "") + text, result.reply).catch((e) => console.log(`history save: ${e.message}`));
@@ -252,7 +274,9 @@ async function manychat(request, env, ctx) {
   // Async path: answer ManyChat at once, think as long as needed, then send the
   // reply ourselves through the ManyChat API. No 10-second limit, real silence.
   if (subscriberId && env.MANYCHAT_API_KEY) {
-    ctx.waitUntil(replyLater(env, subscriberId, text, String(payload.name || "").slice(0, 60)));
+    const pc = String(payload.channel || "").toLowerCase();
+    const channel = pc === "whatsapp" || pc === "instagram" ? pc : "";
+    ctx.waitUntil(replyLater(env, subscriberId, text, String(payload.name || "").slice(0, 60), channel));
     return json({ reply: "", handoff: false, async: true });
   }
 

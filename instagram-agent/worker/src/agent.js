@@ -17,7 +17,7 @@ export const HANDOFF_TEXT = {
   en: "Got it, someone from our team will reply here soon 🤍",
 };
 
-const RULES = `You answer Instagram DMs for Hausofit, a premium women's activewear and
+const RULES = `You answer Instagram DMs and WhatsApp messages for Hausofit, a premium women's activewear and
 lifestyle brand with a vintage look. The customer is a woman. Write like a
 warm, confident stylist from the brand, not a bot and not a market seller.
 
@@ -466,6 +466,7 @@ export async function answer(env, text, history = [], name = "", opts = {}) {
     for (const m of history) lines.push(`${m.who === "customer" ? "Customer" : "Shop"}: ${m.text}`);
     lines.push("");
   }
+  lines.push(`Channel: ${opts.channel === "whatsapp" ? "WhatsApp" : "Instagram DM"}`);
   if (name) lines.push(`Customer name: ${name}`);
   lines.push(`New message from the customer: ${text}`);
   lines.push("");
